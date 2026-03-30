@@ -40,7 +40,7 @@
 //#define DEVMODE // Development mode. Uncomment to enable for debugging.
 
 //******************************  APRS CONFIG **********************************
-char    CallSign[7]="NOCALL";//DO NOT FORGET TO CHANGE YOUR CALLSIGN
+char    CallSign[7]="KF8EEZ";//DO NOT FORGET TO CHANGE YOUR CALLSIGN
 int8_t  CallNumber=11; //11; //SSID http://www.aprs.org/aprs11/SSIDs.txt
 char    Symbol='O'; // 'O' for balloon, '>' for car, for more info : http://www.aprs.org/symbols/symbols-new.txt
 bool    alternateSymbolTable = false ; //false = '/' , true = '\'
@@ -62,7 +62,7 @@ float     HighVolt=6.0; //GPS is always on if the voltage exceeds this value to 
 
 //******************************  HF (WSPR) CONFIG *************************************
 
-char hf_call[7] = "NOCALL";// DO NOT FORGET TO CHANGE YOUR CALLSIGN
+char hf_call[7] = "KF8EEZ";// DO NOT FORGET TO CHANGE YOUR CALLSIGN
 
 //#define WSPR_DEFAULT_FREQ       10140200UL //30m band
 #define WSPR_DEFAULT_FREQ       14097100UL //20m band
