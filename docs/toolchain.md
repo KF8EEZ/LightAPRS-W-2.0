@@ -37,8 +37,8 @@ Built from `ci/Containerfile`:
 | `arm-none-eabi-gcc` | **7.2.1** (7-2017-q4-major) | pulled automatically as a core tool dependency |
 | also present | `bossac`, `openocd`, `avrdude`, CMSIS/CMSIS-Atmel | tool deps of the SAMD core — usable for a future flash path |
 
-Resulting image: **~1.21 GB**, `localhost/arduino-cli-samd:latest` (local build; not
-pushed to a registry).
+Resulting image: **~1.21 GB**, published at `ghcr.io/kf8eez/arduino-cli-samd`
+(public, linked to this repo — see *Usage*).
 
 ### Board / FQBN
 
@@ -69,11 +69,34 @@ any stock library of the same name.
 
 ## Usage
 
-One-time image build (from the repo root):
+The image is published at **`ghcr.io/kf8eez/arduino-cli-samd`** (public, linked to
+this repo via the `org.opencontainers.image.source` label + a manual "Connect
+Repository" on the package settings page — that link does not happen automatically
+for a `podman push` with a PAT, only for pushes from GitHub Actions). Pull it:
+
+```bash
+podman pull ghcr.io/kf8eez/arduino-cli-samd:latest
+IMAGE=ghcr.io/kf8eez/arduino-cli-samd:latest ci/compile.sh   # compile.sh honours IMAGE=
+```
+
+Or build it yourself (from the repo root):
 
 ```bash
 podman build -t arduino-cli-samd ci/          # or docker
 ```
+
+Publishing a new version is **manual, on purpose** — no CI workflow:
+
+```bash
+podman build -t arduino-cli-samd -t ghcr.io/kf8eez/arduino-cli-samd:latest ci/
+podman tag ghcr.io/kf8eez/arduino-cli-samd:latest ghcr.io/kf8eez/arduino-cli-samd:$(git rev-parse --short HEAD)
+podman login ghcr.io -u <github-username>          # needs a token with write:packages
+podman push ghcr.io/kf8eez/arduino-cli-samd:latest
+podman push ghcr.io/kf8eez/arduino-cli-samd:$(git rev-parse --short HEAD)
+```
+
+Do this after any change to `ci/Containerfile` (version bumps to
+`ARDUINO_CLI_VERSION` / `SAMD_VERSION`, or the OCI labels).
 
 Compile check:
 
@@ -126,8 +149,11 @@ None block compilation; none originate from local changes.
    pinned (`sh -s 1.1.1`) but the installer script is not. Low risk (it only
    downloads + unpacks a pinned tarball). Hardening options: vendor the script, or
    `curl` the release tarball from `downloads.arduino.cc` directly.
-2. **Local image only.** Not published; each machine runs `podman build ci/`. A
-   published image (GHCR) would make CI and onboarding faster — see next steps.
+2. **Published, but manually.** `ghcr.io/kf8eez/arduino-cli-samd` (public) saves
+   onboarding a local build. There is deliberately **no CI** publishing it — a
+   human runs `podman build` + `podman push` after touching `ci/Containerfile`
+   (see *Usage*), so the registry tag can silently drift behind the Containerfile
+   if that step is forgotten. No automated staleness check exists.
 3. **No flash/upload path yet.** `bossac` and `openocd` are in the image, so
    `arduino-cli upload --fqbn … -p /dev/ttyACM0` could be added with a
    `--device` passthrough. Deliberately left out for now — flashing stays with the
@@ -145,12 +171,12 @@ None block compilation; none originate from local changes.
 
 ## Next steps
 
-- [ ] `.github/workflows/compile.yml`: run `ci/compile.sh` (or `arduino-cli`
-      directly via `arduino/setup-arduino-cli`) on push / PR, matrix over the
-      sketch dirs.
-- [ ] Optionally publish `arduino-cli-samd` to GHCR and have `compile.sh` /
-      CI pull it instead of building.
+No GitHub Actions workflow is planned (deliberate — compile checks run locally /
+in-session instead of in CI).
+
 - [ ] Fold `ci/` into `main` (currently isolated on `ci-arduino-cli`).
+- [ ] Remember to `podman build` + `podman push` a new tag whenever
+      `ci/Containerfile` changes (manual — see *Usage* and limitation #2 above).
 - [ ] Consider upstreaming the `ZeroAPRS` `architectures=samd21,samd` one-liner to
       silence the compatibility warning.
 

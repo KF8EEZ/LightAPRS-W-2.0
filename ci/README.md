@@ -16,11 +16,24 @@ GUI Arduino IDE container at <https://github.com/anielsen001/arduino-container>.
 
 ## Usage
 
-One-time image build (from the repo root):
+The image is published at **`ghcr.io/kf8eez/arduino-cli-samd`** (public, linked to
+this repo). Pull it instead of building locally:
+
+```bash
+podman pull ghcr.io/kf8eez/arduino-cli-samd:latest
+IMAGE=ghcr.io/kf8eez/arduino-cli-samd:latest ci/compile.sh   # compile.sh honours IMAGE=
+```
+
+Or build it yourself from `ci/Containerfile` (from the repo root):
 
 ```bash
 podman build -t arduino-cli-samd ci/      # or: docker build -t arduino-cli-samd ci/
 ```
+
+There is **no CI workflow** that publishes this automatically — it's a manual
+`podman build` + `podman push` when `ci/Containerfile` changes (versions: pin bumps
+to `ARDUINO_CLI_VERSION` / `SAMD_VERSION`). Tags used: `latest` and the short commit
+SHA of the `ci/` change.
 
 Compile the pico-balloon sketch:
 
