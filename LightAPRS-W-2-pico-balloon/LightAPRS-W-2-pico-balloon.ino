@@ -362,7 +362,14 @@ if (((readBatt() > BattMin) && GpsFirstFix) || ((readBatt() > GpsMinVolt) && !Gp
             SerialUSB.print(F("WSPR slot ")); SerialUSB.print(wsprPrepSlot); SerialUSB.println(F(" preparing..."));
             #endif
 
-            while (second() != 0) {
+            // Wait for the *next* minute to begin at second 0 -- checking only
+            // second()==0 is not enough: if we happened to enter this branch
+            // exactly at second 0 of the prep minute, that check is already
+            // true and encode() would fire a full minute early, on an odd
+            // (non-WSPR-compliant) minute. Requiring the minute to actually
+            // change guards against that regardless of entry timing.
+            uint8_t wsprPrepEntryMinute = minute();
+            while (minute() == wsprPrepEntryMinute || second() != 0) {
               Watchdog.reset();
               delay(1);
             }
