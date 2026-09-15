@@ -9,6 +9,10 @@
 #   ci/compile.sh
 FROM debian:bookworm-slim
 
+LABEL org.opencontainers.image.source="https://github.com/KF8EEZ/LightAPRS-W-2.0" \
+      org.opencontainers.image.description="Headless arduino-cli + arduino:samd toolchain for compile-checking LightAPRS-W 2.0 sketches" \
+      org.opencontainers.image.licenses="GPL-3.0"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git python3 \
     && rm -rf /var/lib/apt/lists/*
