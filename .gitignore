@@ -1,3 +1,13 @@
 ### macOS ###
 # General
 .DS_Store
+
+### Arduino / arduino-cli build output ###
+# Only produced if a compile invocation adds --export-binaries or --output-dir;
+# the default `ci/compile.sh` does not, but ignore it up front regardless.
+build/
+*.ino.bin
+*.ino.elf
+*.ino.hex
+*.ino.map
+*.ino.eep

@@ -86,8 +86,11 @@ Env overrides: `IMAGE`, `FQBN`, `ENGINE` (see the header of `ci/compile.sh`).
 
 First `compile.sh` after a build caches nothing extra; subsequent runs are
 **~20-40 s**. The container mounts the repo read-write at `/work` with the podman
-`:Z` SELinux relabel flag; build artefacts are written under
-`LightAPRS-W-2-pico-balloon/build/` on the host (git-ignored — see below).
+`:Z` SELinux relabel flag. By default `arduino-cli compile` builds into its own
+cache dir inside the container and leaves nothing behind on the host; a
+`<sketch>/build/` directory only appears if a future invocation adds
+`--export-binaries` or `--output-dir` (`.gitignore` now covers that case
+regardless).
 
 ## Verification performed
 
@@ -134,13 +137,14 @@ None block compilation; none originate from local changes.
 5. **Container engine.** Developed against `podman` 4.9 (with the `docker` CLI
    shim). `compile.sh` auto-detects either; the `:Z` mount flag is a no-op on
    non-SELinux hosts and harmless under Docker.
-6. **`build/` artefacts.** `arduino-cli` drops a `build/` dir next to the sketch.
-   Add `LightAPRS-W-2-pico-balloon/build/` (or `*/build/`) to `.gitignore` — the
-   repo's current `.gitignore` only covers `.DS_Store`.
+6. **`build/` artefacts (defensive).** Not produced by the current `compile.sh`
+   invocation (verified: no `build/` appears after a run), but `--export-binaries`
+   or `--output-dir` would drop one next to the sketch, or `arduino-cli-samd/`
+   at the repo root respectively. `.gitignore` now covers `*/build/` and the
+   common `arduino-cli` binary output extensions up front, before anyone hits it.
 
 ## Next steps
 
-- [ ] Add `*/build/` to `.gitignore`.
 - [ ] `.github/workflows/compile.yml`: run `ci/compile.sh` (or `arduino-cli`
       directly via `arduino/setup-arduino-cli`) on push / PR, matrix over the
       sketch dirs.
