@@ -64,12 +64,42 @@ float     HighVolt=6.0; //GPS is always on if the voltage exceeds this value to 
 
 char hf_call[7] = "NOCALL";// DO NOT FORGET TO CHANGE YOUR CALLSIGN
 
-//#define WSPR_DEFAULT_FREQ       10140200UL //30m band
-#define WSPR_DEFAULT_FREQ       14097100UL //20m band
-//#define WSPR_DEFAULT_FREQ       18106100UL //17M band
-//#define WSPR_DEFAULT_FREQ       21096100UL //15m band
-//#define WSPR_DEFAULT_FREQ       24926100UL //12M band
-//#define WSPR_DEFAULT_FREQ       28126100UL //10m band
+// ---- U4B protocol channel identity --------------------------------------------
+// Register YOUR channel at https://traquito.github.io/channelmap/ (or the legacy
+// https://qrp-labs.com/u4b). DO NOT FLY WITH THESE PLACEHOLDER VALUES -- two
+// trackers sharing a channel collide on-air and corrupt both balloons' decodes.
+#define U4B_ID1            '0'        // callsign char 1: '0', '1', or 'Q'
+#define U4B_ID3            '0'        // callsign char 3: '0'-'9'
+#define WSPR_START_MINUTE  4          // Regular-msg start minute (0,2,4,6,8); later slots follow +2n min
+
+// Legal 20m U4B lanes (Hz) -- pick the ONE assigned to your channel. 14097100
+// (band center) is deliberately skipped by U4B; never use it.
+//   14097020   14097060   14097140   14097180
+#define WSPR_LANE_FREQ     14097020UL
+
+// How many of the 3 OPTIONAL Extended Telemetry slots (+4, +6, +8 min) to
+// transmit each cycle, in addition to the always-on Regular + Basic Telemetry
+// pair. 0 = today's minimal U4B pair only. Each active slot adds one more
+// ~110s WSPR transmission per 10-minute cycle. Slots activate in order
+// (1 -> +4min only, 2 -> +4 and +6min, 3 -> all of +4/+6/+8min).
+// NOTE: extended slots currently transmit a placeholder "no fields defined yet"
+// message -- see prepareWsprExtendedMessage(). Wire in real telemetry there
+// before relying on this for actual data.
+#define WSPR_EXTENDED_SLOT_COUNT  0   // 0-3
+
+// U4B Extended Telemetry HdrType values (see prepareWsprExtendedMessage()).
+#define U4B_HDR_TYPE_USER_DEFINED       0
+#define U4B_HDR_TYPE_TRACKER_TELEMETRY  1
+#define U4B_HDR_TYPE_GPS_TELEMETRY      2
+#define U4B_HDR_TYPE_VENDOR_DEFINED     15
+
+// Derived scheduler minutes -- do not edit directly, see loop() / wsprCurrentPrepSlot().
+#define WSPR_SLOT0_MINUTE   (WSPR_START_MINUTE)             // Regular
+#define WSPR_SLOT1_MINUTE   ((WSPR_START_MINUTE + 2) % 10)  // Basic Telemetry
+#define WSPR_SLOT2_MINUTE   ((WSPR_START_MINUTE + 4) % 10)  // Extended #1 (if enabled)
+#define WSPR_SLOT3_MINUTE   ((WSPR_START_MINUTE + 6) % 10)  // Extended #2 (if enabled)
+#define WSPR_SLOT4_MINUTE   ((WSPR_START_MINUTE + 8) % 10)  // Extended #3 (if enabled)
+#define WSPR_ACTIVE_SLOTS   (2 + WSPR_EXTENDED_SLOT_COUNT)  // 2..5
 //for all bands -> http://wsprnet.org/drupal/node/7352
 
 
@@ -134,12 +164,26 @@ uint16_t TxCount = 1; //increase +1 after every APRS transmission
 #define FT8_DELAY               159          // Delay value for FT8
 
 #define HF_CORRECTION              -13000       // Change this for your ref osc
-  
+
+static const uint8_t u4bValidDbm[19] = {0,3,7,10,13,17,20,23,27,30,33,37,40,43,47,50,53,57,60};
+
 // Global variables
 unsigned long hf_freq;
 char hf_message[13] = "NOCALL AA00";//for non WSPR modes, you don't have to change this, updated by hf_call and GPS location
 char hf_loc[] = "AA00";             //for WSPR, updated by GPS location. You don't have to change this.
 uint8_t dbm = 10;
+
+char    hf_telem_call[7] = "0A0AAA"; // synthesized Basic Telemetry callsign, filled each cycle
+char    hf_telem_loc[5]  = "AA00";    // synthesized Basic Telemetry grid, filled each cycle
+uint8_t hf_telem_dbm     = 0;         // synthesized Basic Telemetry power, filled each cycle
+
+char    hf_ext_call[7]   = "0A0AAA"; // synthesized Extended Telemetry callsign, filled each cycle
+char    hf_ext_loc[5]    = "AA00";    // synthesized Extended Telemetry grid, filled each cycle
+uint8_t hf_ext_dbm       = 0;         // synthesized Extended Telemetry power, filled each cycle
+
+int8_t  wspr_active_slot = 0;         // 0=Regular,1=Basic Telemetry,2-4=Extended; scheduler
+                                       // sets this before encode(); set_tx_buffer() reads it
+
 uint8_t tx_buffer[255];
 uint8_t symbol_count;
 uint16_t tone_delay, tone_spacing;
@@ -268,8 +312,10 @@ if (((readBatt() > BattMin) && GpsFirstFix) || ((readBatt() > GpsMinVolt) && !Gp
           }      
           GpsInvalidTime=0;
 
+          int8_t wsprPrepSlot = wsprCurrentPrepSlot();
+
           // Checks if there is an HF (WSPR) TX window is soon, if not then send APRS beacon
-          if (!((minute() % 10 == 3 || minute() % 10 == 7) &&  second()>50 && readBatt() > WsprBattMin && timeStatus() == timeSet)){
+          if (!(wsprPrepSlot >= 0 && second() > 50 && readBatt() > WsprBattMin && timeStatus() == timeSet)){
              updateTelemetry();
             //APRS frequency isn't the same for the whole world. (for pico balloon only)
             if (!radioSetup || TxCount == 200) {
@@ -294,35 +340,51 @@ if (((readBatt() > BattMin) && GpsFirstFix) || ((readBatt() > GpsMinVolt) && !Gp
 
           }   
 
-          // preparations for HF starts one minute before TX time at minute 3, 7, 13, 17, 23, 27, 33, 37, 43, 47, 53 or 57. No APRS TX during this period...
-          if (readBatt() > WsprBattMin && timeStatus() == timeSet && ((minute() % 10 == 3) || (minute() % 10 == 7)) ) { 
-            GridLocator(hf_loc, gps.location.lat(), gps.location.lng());
-            sprintf(hf_message,"%s %s",hf_call,hf_loc);
-            
+          // preparations for HF start one minute before each active U4B slot's TX
+          // minute. No APRS TX during this period (see wsprPrepSlot guard above).
+          if (readBatt() > WsprBattMin && timeStatus() == timeSet && wsprPrepSlot >= 0) {
+            wspr_active_slot = wsprPrepSlot;
+
+            switch (wsprPrepSlot) {
+              case 0:
+                GridLocator(hf_loc, gps.location.lat(), gps.location.lng());
+                sprintf(hf_message, "%s %s", hf_call, hf_loc);
+                break;
+              case 1:
+                prepareWsprTelemetryMessage();
+                break;
+              default: // 2, 3, or 4
+                prepareWsprExtendedMessage(wsprPrepSlot);
+                break;
+            }
+
             #if defined(DEVMODE)
-            SerialUSB.println(F("Digital HF Mode Prepearing"));
-            SerialUSB.print(F("Grid Locator: "));
-            SerialUSB.println(hf_loc);
+            SerialUSB.print(F("WSPR slot ")); SerialUSB.print(wsprPrepSlot); SerialUSB.println(F(" preparing..."));
             #endif
-            
-            //HF transmission starts at minute 4, 8, 14, 18, 24, 28, 34, 38, 44, 48, 54 or 58 
-            while (((minute() % 10 != 4) || (minute() % 10 != 8)) && second() != 0) {
+
+            // Wait for the *next* minute to begin at second 0 -- checking only
+            // second()==0 is not enough: if we happened to enter this branch
+            // exactly at second 0 of the prep minute, that check is already
+            // true and encode() would fire a full minute early, on an odd
+            // (non-WSPR-compliant) minute. Requiring the minute to actually
+            // change guards against that regardless of entry timing.
+            uint8_t wsprPrepEntryMinute = minute();
+            while (minute() == wsprPrepEntryMinute || second() != 0) {
               Watchdog.reset();
               delay(1);
             }
             #if defined(DEVMODE)
-            SerialUSB.println(F("Digital HF Mode Sending..."));
-            #endif          
+            SerialUSB.println(F("WSPR Sending..."));
+            #endif
             encode();
-            //HFSent=true;
 
             #if defined(DEVMODE)
-            SerialUSB.println(F("Digital HF Mode Sent"));
-            #endif             
-  
+            SerialUSB.println(F("WSPR Sent"));
+            #endif
+
           } else {
             sleepSeconds(BeaconWait);
-          }   
+          }
         }else {
           #if defined(DEVMODE)
           SerialUSB.println(F("Not enough sattelites"));
@@ -922,7 +984,7 @@ void encode()
     tone_delay = JT4_DELAY;
     break;
   case MODE_WSPR:
-    hf_freq = WSPR_DEFAULT_FREQ;
+    hf_freq = WSPR_LANE_FREQ;   // was: WSPR_DEFAULT_FREQ (forbidden band-center freq)
     symbol_count = WSPR_SYMBOL_COUNT; // From the library defines
     tone_spacing = WSPR_TONE_SPACING;
     tone_delay = WSPR_DELAY;
@@ -984,6 +1046,149 @@ void encode()
   Watchdog.reset();
 }
 
+//******************************  U4B TELEMETRY ENCODING  ***********************
+
+uint16_t u4bAltToStep(float meters) {
+  if (meters < 0) meters = 0; if (meters > 21340) meters = 21340;
+  return (uint16_t)(meters / 20.0 + 0.5);
+}
+uint8_t u4bTempToStep(float celsius) {
+  if (celsius < -50) celsius = -50; if (celsius > 39) celsius = 39;
+  return (uint8_t)(celsius - (-50));
+}
+uint8_t u4bVoltToStep(float volts) {
+  if (volts < 3.00) volts = 3.00; if (volts > 4.95) volts = 4.95;
+  uint8_t q = (uint8_t)((volts - 3.0) / 0.05 + 0.5);
+  return (q + 20) % 40;  // reference impl (traquito/WsprEncoded) rotates by 20/40; self-inverse
+}
+uint8_t u4bSpeedToStep(float knots) {
+  if (knots < 0) knots = 0; if (knots > 82) knots = 82;
+  return (uint8_t)(knots / 2.0 + 0.5);
+}
+
+// Packs grid5/grid6/altitude into callsign chars id2,id4,id5,id6 (Basic Telemetry,
+// message-1 half). id1/id3 are the fixed channel identity, not part of this calc.
+void u4bEncodeCallsign(char id1, char id3, uint8_t grid5Val, uint8_t grid6Val,
+                        uint16_t altFracM, char *outCall6 /* [7] */) {
+  uint32_t val = 0;
+  val *=   24; val += grid5Val;
+  val *=   24; val += grid6Val;
+  val *= 1068; val += altFracM;             // val: 0..615167
+
+  uint8_t id6Val = val % 26; val /= 26;
+  uint8_t id5Val = val % 26; val /= 26;
+  uint8_t id4Val = val % 26; val /= 26;
+  uint8_t id2Val = val % 36;                // always < 36 given the input domain
+
+  outCall6[0] = id1;
+  outCall6[1] = (id2Val < 10) ? ('0' + id2Val) : ('A' + id2Val - 10);
+  outCall6[2] = id3;
+  outCall6[3] = 'A' + id4Val;
+  outCall6[4] = 'A' + id5Val;
+  outCall6[5] = 'A' + id6Val;
+  outCall6[6] = 0;
+}
+
+// Packs temp/voltage/speed/gpsValid (+ fixed marker bit=1) into synthesized grid4 +
+// power (Basic Telemetry, message-2 half).
+void u4bEncodeGridPower(uint8_t tempCNum, uint8_t voltageNum, uint8_t speedKnotsNum,
+                         uint8_t gpsValidNum, char *outGrid4 /* [5] */, uint8_t *outDbm) {
+  uint32_t val = 0;
+  val *= 90; val += tempCNum;
+  val *= 40; val += voltageNum;
+  val *= 42; val += speedKnotsNum;
+  val *=  2; val += gpsValidNum;
+  val *=  2; val += 1;                      // fixed "basic telemetry" marker bit
+
+  uint8_t powerVal = val % 19; val /= 19;
+  uint8_t g4Val    = val % 10; val /= 10;
+  uint8_t g3Val    = val % 10; val /= 10;
+  uint8_t g2Val    = val % 18; val /= 18;
+  uint8_t g1Val    = val % 18;              // always < 18 given the input domain
+
+  outGrid4[0] = 'A' + g1Val;
+  outGrid4[1] = 'A' + g2Val;
+  outGrid4[2] = '0' + g3Val;
+  outGrid4[3] = '0' + g4Val;
+  outGrid4[4] = 0;
+  *outDbm = u4bValidDbm[powerVal];
+}
+
+void prepareWsprTelemetryMessage() {
+  char sub[3];
+  GridLocatorSubsquare(sub, gps.location.lat(), gps.location.lng());
+
+  uint16_t altStep  = u4bAltToStep(gps.altitude.meters());
+  uint8_t  tempStep = u4bTempToStep(bmp.readTemperature());
+  uint8_t  voltStep = u4bVoltToStep(readBatt());
+  uint8_t  spdStep  = u4bSpeedToStep(gps.speed.knots());
+  uint8_t  gpsValid = (gps.location.isValid() && gps.satellites.value() > 3) ? 1 : 0;
+
+  u4bEncodeCallsign(U4B_ID1, U4B_ID3, sub[0] - 'A', sub[1] - 'A', altStep, hf_telem_call);
+  u4bEncodeGridPower(tempStep, voltStep, spdStep, gpsValid, hf_telem_loc, &hf_telem_dbm);
+
+#if defined(DEVMODE)
+  SerialUSB.print(F("WSPR Basic Telemetry: ")); SerialUSB.print(hf_telem_call);
+  SerialUSB.print(' '); SerialUSB.print(hf_telem_loc);
+  SerialUSB.print(' '); SerialUSB.println(hf_telem_dbm);
+#endif
+}
+
+// Packs the 4-field Extended Telemetry header ONLY -- no user-defined data fields
+// yet (that's a deliberately deferred follow-up). Produces a well-formed,
+// WSPR-Type-1-valid callsign/grid/power triple whose HdrTelemetryType bit decodes
+// as 0 (Extended) and whose HdrSlot/HdrType match what's passed in; all "data"
+// bits are 0. To add real fields later: pack them (in reverse definition order,
+// as val = val*numValues + fieldValue) BEFORE the four header-packing lines below,
+// so the header stays the low-order part of the combined value -- mirrors the
+// reference implementation (traquito/WsprEncoded WsprMessageTelemetryExtendedCommon).
+void u4bEncodeExtendedHeader(char id1, char id3, uint8_t hdrType, uint8_t hdrSlot,
+                              char *outCall6 /* [7] */, char *outGrid4 /* [5] */,
+                              uint8_t *outDbm) {
+  uint32_t val = 0;
+  val *= 5;  val += hdrSlot;      // 0..4
+  val *= 16; val += hdrType;      // 0..15
+  val *= 4;  val += 0;            // HdrRESERVED, always 0
+  val *= 2;  val += 0;            // HdrTelemetryType = 0 -> Extended (Basic uses 1 here)
+
+  uint8_t powerVal = val % 19; val /= 19;
+  uint8_t g4Val    = val % 10; val /= 10;
+  uint8_t g3Val    = val % 10; val /= 10;
+  uint8_t g2Val    = val % 18; val /= 18;
+  uint8_t g1Val    = val % 18; val /= 18;
+  uint8_t id6Val   = val % 26; val /= 26;
+  uint8_t id5Val   = val % 26; val /= 26;
+  uint8_t id4Val   = val % 26; val /= 26;
+  uint8_t id2Val   = val % 36;              // remaining, always < 36 with no data fields
+
+  outCall6[0] = id1;
+  outCall6[1] = (id2Val < 10) ? ('0' + id2Val) : ('A' + id2Val - 10);
+  outCall6[2] = id3;
+  outCall6[3] = 'A' + id4Val;
+  outCall6[4] = 'A' + id5Val;
+  outCall6[5] = 'A' + id6Val;
+  outCall6[6] = 0;
+
+  outGrid4[0] = 'A' + g1Val;
+  outGrid4[1] = 'A' + g2Val;
+  outGrid4[2] = '0' + g3Val;
+  outGrid4[3] = '0' + g4Val;
+  outGrid4[4] = 0;
+  *outDbm = u4bValidDbm[powerVal];
+}
+
+// slotIndex is the protocol slot number (2, 3, or 4) -- matches HdrSlot directly.
+void prepareWsprExtendedMessage(uint8_t slotIndex) {
+  u4bEncodeExtendedHeader(U4B_ID1, U4B_ID3, U4B_HDR_TYPE_USER_DEFINED, slotIndex,
+                           hf_ext_call, hf_ext_loc, &hf_ext_dbm);
+#if defined(DEVMODE)
+  SerialUSB.print(F("WSPR Extended (slot ")); SerialUSB.print(slotIndex);
+  SerialUSB.print(F("): ")); SerialUSB.print(hf_ext_call);
+  SerialUSB.print(' '); SerialUSB.print(hf_ext_loc);
+  SerialUSB.print(' '); SerialUSB.println(hf_ext_dbm);
+#endif
+}
+
 void set_tx_buffer()
 {
   // Clear out the transmit buffer
@@ -1002,7 +1207,11 @@ void set_tx_buffer()
     jtencode.jt4_encode(hf_message, tx_buffer);
     break;
   case MODE_WSPR:
-    jtencode.wspr_encode(hf_call, hf_loc, dbm, tx_buffer);
+    switch (wspr_active_slot) {
+      case 0:  jtencode.wspr_encode(hf_call, hf_loc, dbm, tx_buffer); break;
+      case 1:  jtencode.wspr_encode(hf_telem_call, hf_telem_loc, hf_telem_dbm, tx_buffer); break;
+      default: jtencode.wspr_encode(hf_ext_call, hf_ext_loc, hf_ext_dbm, tx_buffer); break;
+    }
     break;
   case MODE_FT8:
     jtencode.ft8_encode(hf_message, tx_buffer);
@@ -1036,6 +1245,42 @@ void GridLocator(char *dst, float latt, float lon) {
   dst[2] = (char)o2 + '0';
   dst[3] = (char)a2 + '0';
   dst[4] = (char)0;
+}
+
+// Computes Maidenhead chars 5 and 6 (subsquare, 'A'-'X', 24 values each) from
+// lat/lon, for U4B Basic Telemetry. Same geometry as GridLocator(), carried one
+// division level further; kept as a separate function so GridLocator()'s 4-char
+// path (used by the Regular WSPR message and APRS) is untouched.
+void GridLocatorSubsquare(char *dst2, float latt, float lon) {
+  float remainder; int o1, o2, a1;
+  remainder = lon + 180.0;
+  o1 = (int)(remainder / 20.0); remainder -= (float)o1 * 20.0;
+  o2 = (int)(remainder / 2.0);  remainder -= (float)o2 * 2.0;      // 0..2 deg left
+  int sub_lon = (int)(remainder * 12.0);                           // 0..23
+
+  remainder = latt + 90.0;
+  a1 = (int)(remainder / 10.0); remainder -= (float)a1 * 10.0;
+  remainder -= (float)(int)remainder;                              // 0..1 deg left
+  int sub_lat = (int)(remainder * 24.0);                           // 0..23
+
+  if (sub_lon > 23) sub_lon = 23;   // guard float rounding at bin edges
+  if (sub_lat > 23) sub_lat = 23;
+  dst2[0] = (char)('A' + sub_lon);
+  dst2[1] = (char)('A' + sub_lat);
+  dst2[2] = 0;
+}
+
+// Returns which of the WSPR_ACTIVE_SLOTS (0..4) is due to prep right now (its TX
+// minute is 1 minute from now), or -1 if none. Slot minutes: 0=Regular,
+// 1=Basic Telemetry, 2-4=Extended (only as many as WSPR_ACTIVE_SLOTS allows).
+int8_t wsprCurrentPrepSlot() {
+  const uint8_t slotMinute[5] = {WSPR_SLOT0_MINUTE, WSPR_SLOT1_MINUTE, WSPR_SLOT2_MINUTE,
+                                  WSPR_SLOT3_MINUTE, WSPR_SLOT4_MINUTE};
+  uint8_t nowMin10 = minute() % 10;
+  for (int8_t i = 0; i < WSPR_ACTIVE_SLOTS; i++) {
+    if (nowMin10 == (slotMinute[i] + 9) % 10) return i;
+  }
+  return -1;
 }
 
 void freeMem() {
