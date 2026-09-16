@@ -1,0 +1,6 @@
+[project]
+name = "u4b-tools"
+version = "0.1.0"
+description = "Host-side helpers for the U4B pico-balloon WSPR telemetry protocol: packing-math validation and channel-number lookup."
+requires-python = ">=3.11"
+dependencies = []
