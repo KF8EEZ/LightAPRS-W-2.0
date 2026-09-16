@@ -11,3 +11,8 @@ build/
 *.ino.hex
 *.ino.map
 *.ino.eep
+
+### Python (uv) ###
+.venv/
+__pycache__/
+*.pyc
